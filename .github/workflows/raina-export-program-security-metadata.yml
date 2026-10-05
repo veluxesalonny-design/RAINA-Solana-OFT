@@ -1,0 +1,99 @@
+name: RAINA Export Canonical Program Security Metadata
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+  SQUADS_VAULT: Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu
+  PROGRAM_METADATA_VERSION: "0.10.0"
+  RPC_URL: https://api.mainnet-beta.solana.com
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout metadata file
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            raina-security.json
+          sparse-checkout-cone-mode: false
+
+      - name: Verify canonical upgrade authority and vault balance
+        shell: bash
+        run: |
+          set -euo pipefail
+          RPC_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["3NRCLVwoeCpZAQ7pXiAQBRhmwm4pUduBEvhiqMXTFJMJ",{"encoding":"base64","commitment":"finalized"}]}'
+          curl -fsS -H 'content-type: application/json' -d "$RPC_PAYLOAD" "$RPC_URL" > programdata.json
+          python3 - <<'PY'
+          import base64, json
+          from pathlib import Path
+          j=json.loads(Path('programdata.json').read_text())
+          v=j['result']['value']
+          if not v: raise SystemExit('ProgramData account missing')
+          raw=base64.b64decode(v['data'][0])
+          # UpgradeableLoaderState::ProgramData: tag u32 LE, slot u64 LE, Option<Pubkey> tag u8 then pubkey
+          if int.from_bytes(raw[:4],'little') != 3: raise SystemExit('unexpected ProgramData state')
+          has_auth=raw[12]
+          if has_auth != 1: raise SystemExit('program is immutable; canonical metadata authority unavailable')
+          alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+          n=int.from_bytes(raw[13:45],'big')
+          out=''
+          while n:
+              n,r=divmod(n,58); out=alphabet[r]+out
+          pad=0
+          for b in raw[13:45]:
+              if b==0: pad+=1
+              else: break
+          out='1'*pad+out
+          expected='Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu'
+          print('upgrade_authority='+out)
+          if out != expected: raise SystemExit(f'upgrade authority mismatch: {out}')
+          PY
+          BAL_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu",{"commitment":"finalized"}]}'
+          curl -fsS -H 'content-type: application/json' -d "$BAL_PAYLOAD" "$RPC_URL" | tee vault-balance.json
+
+      - name: Export canonical security metadata transaction for Squads vault
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y "@solana-program/program-metadata@${PROGRAM_METADATA_VERSION}" \
+            write security "$PROGRAM_ID" raina-security.json \
+            --rpc "$RPC_URL" \
+            --export "$SQUADS_VAULT" \
+            --export-encoding base58 \
+            --tx-version 0 | tee exported-security-metadata.txt
+          grep -Eq '[1-9A-HJ-NP-Za-km-z]{80,}' exported-security-metadata.txt
+
+      - name: Record immutable export evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum raina-security.json | tee raina-security.sha256
+          {
+            echo "program_id=$PROGRAM_ID"
+            echo "programdata=3NRCLVwoeCpZAQ7pXiAQBRhmwm4pUduBEvhiqMXTFJMJ"
+            echo "canonical_authority=$SQUADS_VAULT"
+            echo "program_metadata_cli=$PROGRAM_METADATA_VERSION"
+            echo "seed=security"
+            echo "submitted=false"
+            echo "requires_squads_2_of_3=true"
+          } | tee export-summary.txt
+
+      - name: Upload unsigned Squads export
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-canonical-security-metadata-export
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            raina-security.json
+            raina-security.sha256
+            exported-security-metadata.txt
+            export-summary.txt
+            vault-balance.json
