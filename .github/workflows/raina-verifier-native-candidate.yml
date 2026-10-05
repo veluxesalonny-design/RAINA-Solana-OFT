@@ -27,14 +27,37 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Checkout selected public source
+      - name: Checkout source A
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
+          path: source-a
           fetch-depth: 1
           sparse-checkout: |
             examples/oft-solana
           sparse-checkout-cone-mode: true
+
+      - name: Checkout source B
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source-b
+          fetch-depth: 1
+          sparse-checkout: |
+            examples/oft-solana
+          sparse-checkout-cone-mode: true
+
+      - name: Prove identical source checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA_A="$(git -C source-a rev-parse HEAD)"
+          SHA_B="$(git -C source-b rev-parse HEAD)"
+          echo "source_a=$SHA_A"
+          echo "source_b=$SHA_B"
+          test "$SHA_A" = "$SHA_B"
+          git -C source-a diff --exit-code
+          git -C source-b diff --exit-code
 
       - name: Download pinned official solana-verify
         shell: bash
@@ -45,21 +68,21 @@ jobs:
           chmod +x solana-verify
           ./solana-verify --version
 
-      - name: First verifier-native build
+      - name: Build candidate A
         shell: bash
         run: |
           set -euo pipefail
           ./solana-verify build \
             --base-image "$BASE_IMAGE" \
             --library-name oft \
-            "$GITHUB_WORKSPACE/examples/oft-solana" | tee verifier-build-1.log
-          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
+            "$GITHUB_WORKSPACE/source-a/examples/oft-solana" | tee verifier-build-1.log
+          SO_PATH="$(find source-a/examples/oft-solana -type f -name 'oft.so' | head -n 1)"
           test -n "$SO_PATH"
           cp "$SO_PATH" candidate-1.so
           sha256sum candidate-1.so | tee candidate-1.sha256
           ./solana-verify get-executable-hash candidate-1.so | tail -n 1 | tr -d '\r' | tee candidate-1.exec-hash
 
-      - name: Validate embedded RAINA security metadata
+      - name: Validate candidate A identity and security metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -91,16 +114,15 @@ jobs:
           print('raina_program_id_embedded=true')
           PY
 
-      - name: Clean and rebuild independently
+      - name: Build candidate B from independent checkout
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf examples/oft-solana/target
           ./solana-verify build \
             --base-image "$BASE_IMAGE" \
             --library-name oft \
-            "$GITHUB_WORKSPACE/examples/oft-solana" | tee verifier-build-2.log
-          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
+            "$GITHUB_WORKSPACE/source-b/examples/oft-solana" | tee verifier-build-2.log
+          SO_PATH="$(find source-b/examples/oft-solana -type f -name 'oft.so' | head -n 1)"
           test -n "$SO_PATH"
           cp "$SO_PATH" candidate-2.so
           sha256sum candidate-2.so | tee candidate-2.sha256
@@ -125,6 +147,7 @@ jobs:
           fi
           {
             echo "source_ref=$SOURCE_REF"
+            echo "source_commit=$(git -C source-a rev-parse HEAD)"
             echo "base_image=$BASE_IMAGE"
             echo "solana_verify=$SOLANA_VERIFY_VERSION"
             echo "raw_sha256=$RAW1"
@@ -132,6 +155,7 @@ jobs:
             echo "bytes=$(stat -c%s candidate-1.so)"
             echo "reproduced_twice=true"
             echo "security_txt_embedded=true"
+            echo "raina_program_id_embedded=true"
           } | tee verifier-native-summary.txt
 
       - name: Upload verified candidate evidence
