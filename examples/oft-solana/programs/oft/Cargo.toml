@@ -22,3 +22,4 @@ anchor-spl = "0.31.1"
 oapp = { package = "oapp-latest", git = "https://github.com/LayerZero-Labs/LayerZero-v2.git", rev = "c09287a" }
 utils = { package = "utils-latest", git = "https://github.com/LayerZero-Labs/LayerZero-v2.git", rev = "c09287a" }
 solana-helper = "0.1.0"
+solana-security-txt = "1.1.3"
