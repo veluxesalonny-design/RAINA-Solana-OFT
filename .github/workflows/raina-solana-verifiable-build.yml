@@ -48,7 +48,7 @@ jobs:
           ./solana-verify build \
             --base-image "$RAINA_SOLANA_IMAGE" \
             --library-name oft \
-            examples/oft-solana | tee solana-verify-build.log
+            "$GITHUB_WORKSPACE/examples/oft-solana" | tee solana-verify-build.log
 
       - name: Hash and validate artifact
         shell: bash
