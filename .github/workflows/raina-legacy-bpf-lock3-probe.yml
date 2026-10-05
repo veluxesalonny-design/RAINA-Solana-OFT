@@ -1,0 +1,77 @@
+name: RAINA Legacy BPF Lock-v3 Probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_EXECUTABLE_HASH: f97685776744caeecc6fc5d79278f0030b59f82fa4a682bff94660495ac36f93
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout current verification source
+        uses: actions/checkout@v4
+        with:
+          ref: raina-deployed-source
+          fetch-depth: 1
+          sparse-checkout: |
+            examples/oft-solana
+          sparse-checkout-cone-mode: true
+
+      - name: Convert lockfile format only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep -c '^version = 4$' examples/oft-solana/Cargo.lock)" -eq 1
+          sed -i '0,/^version = 4$/s//version = 3/' examples/oft-solana/Cargo.lock
+          git diff -- examples/oft-solana/Cargo.lock | tee lock-format-only.diff
+          python3 - <<'PY'
+          import subprocess
+          d=subprocess.check_output(['git','diff','--unified=0','--','examples/oft-solana/Cargo.lock'],text=True)
+          changed=[l for l in d.splitlines() if l.startswith(('+','-')) and not l.startswith(('+++','---'))]
+          if changed != ['-version = 4', '+version = 3']:
+              raise SystemExit(f'unexpected lockfile delta: {changed!r}')
+          print('lock_format_only=true')
+          PY
+
+      - name: Download pinned solana-verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
+          echo 'b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f  solana-verify' | sha256sum -c -
+          chmod +x solana-verify
+
+      - name: Build with legacy BPF verifier path
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./solana-verify build --bpf --library-name oft "$GITHUB_WORKSPACE/examples/oft-solana" | tee legacy-bpf-build.log
+          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
+          test -n "$SO_PATH"
+          cp "$SO_PATH" legacy-bpf-oft.so
+          EXEC_HASH="$(./solana-verify get-executable-hash legacy-bpf-oft.so | tail -n 1 | tr -d '\r')"
+          RAW_SHA="$(sha256sum legacy-bpf-oft.so | awk '{print $1}')"
+          {
+            echo "raw_sha256=$RAW_SHA"
+            echo "executable_hash=$EXEC_HASH"
+            echo "bytes=$(stat -c%s legacy-bpf-oft.so)"
+          } | tee legacy-bpf-summary.txt
+          test "$EXEC_HASH" = "$EXPECTED_EXECUTABLE_HASH"
+
+      - name: Upload probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-legacy-bpf-lock3-probe
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            lock-format-only.diff
+            legacy-bpf-build.log
+            legacy-bpf-summary.txt
