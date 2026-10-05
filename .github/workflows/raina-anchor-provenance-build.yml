@@ -1,0 +1,116 @@
+name: RAINA Anchor Provenance Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Public source branch or commit to build
+        required: true
+        type: string
+      expected_raw_sha256:
+        description: Optional exact raw SHA-256 that must match
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OFT_PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+  EXPECTED_ANCHOR_IMAGE_DIGEST: sha256:21ab8a16e19df4301a198d7a55ab2988549aa2d996e6b5ad229c1d95b9f2d326
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout selected source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          sparse-checkout: |
+            examples/oft-solana
+          sparse-checkout-cone-mode: true
+
+      - name: Install Rust 1.84.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.84.1 --profile minimal
+          rustup default 1.84.1
+          rustc --version
+
+      - name: Install Solana CLI 2.2.20
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.2.20/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/share/solana/install/active_release/bin/solana" --version
+
+      - name: Install Anchor CLI 0.31.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --git https://github.com/solana-foundation/anchor --tag v0.31.1 anchor-cli --locked
+          anchor --version
+
+      - name: Build with original RAINA release recipe
+        working-directory: examples/oft-solana
+        shell: bash
+        run: |
+          set -euo pipefail
+          anchor build -v -e OFT_ID="$OFT_PROGRAM_ID"
+          test -s target/verifiable/oft.so
+          sha256sum target/verifiable/oft.so | tee target/verifiable/oft.sha256
+
+      - name: Verify Anchor image and artifact
+        shell: bash
+        env:
+          EXPECTED_RAW_SHA256: ${{ inputs.expected_raw_sha256 }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          docker pull solanafoundation/anchor:v0.31.1 >/dev/null
+          IMAGE_DIGEST="$(docker image inspect solanafoundation/anchor:v0.31.1 --format '{{index .RepoDigests 0}}' | sed 's/^.*@//')"
+          test "$IMAGE_DIGEST" = "$EXPECTED_ANCHOR_IMAGE_DIGEST"
+          cp examples/oft-solana/target/verifiable/oft.so raina-oft.so
+          RAW_SHA="$(sha256sum raina-oft.so | awk '{print $1}')"
+          BYTES="$(stat -c%s raina-oft.so)"
+          {
+            echo "source_ref=$SOURCE_REF"
+            echo "program_id=$OFT_PROGRAM_ID"
+            echo "raw_sha256=$RAW_SHA"
+            echo "bytes=$BYTES"
+            echo "anchor_image_digest=$IMAGE_DIGEST"
+            echo "rust=1.84.1"
+            echo "anchor=0.31.1"
+            echo "solana_cli=2.2.20"
+          } | tee build-summary.txt
+          if [ -n "$EXPECTED_RAW_SHA256" ] && [ "$RAW_SHA" != "$EXPECTED_RAW_SHA256" ]; then
+            echo "Raw SHA mismatch: expected $EXPECTED_RAW_SHA256 got $RAW_SHA" >&2
+            exit 1
+          fi
+
+      - name: Download pinned solana-verify for executable hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
+          echo 'b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f  solana-verify' | sha256sum -c -
+          chmod +x solana-verify
+          ./solana-verify get-executable-hash raina-oft.so | tail -n 1 | tee executable-hash.txt
+
+      - name: Upload provenance artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-anchor-${{ inputs.source_ref }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            raina-oft.so
+            build-summary.txt
+            executable-hash.txt
+            examples/oft-solana/target/verifiable/oft.sha256
