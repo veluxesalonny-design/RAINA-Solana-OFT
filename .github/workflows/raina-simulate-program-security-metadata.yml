@@ -1,0 +1,82 @@
+name: RAINA Simulate Canonical Security Metadata
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+  SQUADS_VAULT: Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu
+  PROGRAM_METADATA_VERSION: "0.10.0"
+  RPC_URL: https://api.mainnet-beta.solana.com
+
+jobs:
+  simulate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            raina-security.json
+          sparse-checkout-cone-mode: false
+
+      - name: Export unsigned transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx -y "@solana-program/program-metadata@${PROGRAM_METADATA_VERSION}" \
+            write security "$PROGRAM_ID" raina-security.json \
+            --rpc "$RPC_URL" \
+            --export "$SQUADS_VAULT" \
+            --export-encoding base58 \
+            --tx-version 0 | tee export.txt
+          grep -E '^[1-9A-HJ-NP-Za-km-z]{80,}$' export.txt | tail -n 1 > tx.base58
+          test -s tx.base58
+
+      - name: Simulate without signature verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, urllib.request
+          alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+          idx={c:i for i,c in enumerate(alphabet)}
+          s=open('tx.base58').read().strip()
+          n=0
+          for c in s: n=n*58+idx[c]
+          raw=n.to_bytes((n.bit_length()+7)//8,'big') if n else b''
+          pad=0
+          for c in s:
+              if c=='1': pad+=1
+              else: break
+          raw=b'\x00'*pad+raw
+          encoded=base64.b64encode(raw).decode()
+          payload={"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":[encoded,{"encoding":"base64","sigVerify":False,"replaceRecentBlockhash":True,"commitment":"processed"}]}
+          req=urllib.request.Request('https://api.mainnet-beta.solana.com',data=json.dumps(payload).encode(),headers={'content-type':'application/json'})
+          with urllib.request.urlopen(req,timeout=30) as r: out=json.load(r)
+          open('simulation.json','w').write(json.dumps(out,indent=2))
+          val=out.get('result',{}).get('value',{})
+          print('simulation_err=',val.get('err'))
+          print('units_consumed=',val.get('unitsConsumed'))
+          for line in val.get('logs') or []: print(line)
+          if val.get('err') is not None: raise SystemExit('security metadata simulation failed')
+          logs='\n'.join(val.get('logs') or [])
+          forbidden=['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA','TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb']
+          if any(x in logs for x in forbidden): raise SystemExit('unexpected token program invocation')
+          if 'ProgM6JCCvbYkfKqJYHePx4xxSUSqJp7rh8Lyv7nk7S' not in logs:
+              raise SystemExit('program-metadata invocation missing')
+          print('simulation_safe=true')
+          PY
+
+      - name: Upload simulation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-canonical-security-metadata-simulation
+          retention-days: 30
+          path: |
+            tx.base58
+            simulation.json
+            raina-security.json
