@@ -1,0 +1,65 @@
+name: RAINA Security Candidate Safety
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout security candidate
+        uses: actions/checkout@v4
+        with:
+          ref: raina-security-txt
+          fetch-depth: 2
+          sparse-checkout: |
+            examples/oft-solana
+          sparse-checkout-cone-mode: true
+
+      - name: Install Rust 1.84.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.84.1 --profile minimal
+          rustup default 1.84.1
+          rustc --version
+
+      - name: Run OFT host tests from locked dependencies
+        working-directory: examples/oft-solana
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked -p oft
+
+      - name: Prove security-only source delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin 4973ba8bef7b0fdf7268469abea3ea50dbd4bbd8
+          mapfile -t FILES < <(git diff --name-only 4973ba8bef7b0fdf7268469abea3ea50dbd4bbd8..HEAD)
+          printf '%s\n' "${FILES[@]}" | tee changed-files.txt
+          test "${#FILES[@]}" -eq 3
+          printf '%s\n' "${FILES[@]}" | grep -Fx 'examples/oft-solana/Cargo.lock'
+          printf '%s\n' "${FILES[@]}" | grep -Fx 'examples/oft-solana/programs/oft/Cargo.toml'
+          printf '%s\n' "${FILES[@]}" | grep -Fx 'examples/oft-solana/programs/oft/src/lib.rs'
+          DIFF="$(git diff --unified=0 4973ba8bef7b0fdf7268469abea3ea50dbd4bbd8..HEAD -- examples/oft-solana/programs/oft/src/lib.rs)"
+          printf '%s\n' "$DIFF" | tee lib-diff.txt
+          ! printf '%s\n' "$DIFF" | grep -E '^[+-][[:space:]]*pub fn (oft_version|init_oft|set_oft_config|set_peer_config|set_pause|withdraw_fee|quote_oft|quote_send|send|lz_receive|lz_receive_types)\('
+          grep -F 'security_txt!' examples/oft-solana/programs/oft/src/lib.rs
+          grep -F 'HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti' examples/oft-solana/programs/oft/src/lib.rs
+          echo 'instruction_surface_unchanged=true' | tee safety-summary.txt
+
+      - name: Upload safety evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-security-candidate-safety
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            changed-files.txt
+            lib-diff.txt
+            safety-summary.txt
