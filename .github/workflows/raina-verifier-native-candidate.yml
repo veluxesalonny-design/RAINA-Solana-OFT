@@ -1,0 +1,138 @@
+name: RAINA Verifier-Native Security Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Public source branch/ref to build
+        required: true
+        default: raina-security-txt
+        type: string
+      expected_executable_hash:
+        description: Optional executable hash that both independent builds must match
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOLANA_VERIFY_VERSION: "0.5.2"
+  SOLANA_VERIFY_SHA256: "b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f"
+  BASE_IMAGE: "solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b"
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout selected public source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          sparse-checkout: |
+            examples/oft-solana
+          sparse-checkout-cone-mode: true
+
+      - name: Download pinned official solana-verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/solana-foundation/solana-verifiable-build/releases/download/v${SOLANA_VERIFY_VERSION}/solana-verify-${SOLANA_VERIFY_VERSION}-linux" -o solana-verify
+          echo "${SOLANA_VERIFY_SHA256}  solana-verify" | sha256sum -c -
+          chmod +x solana-verify
+          ./solana-verify --version
+
+      - name: First verifier-native build
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./solana-verify build \
+            --base-image "$BASE_IMAGE" \
+            --library-name oft \
+            "$GITHUB_WORKSPACE/examples/oft-solana" | tee verifier-build-1.log
+          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
+          test -n "$SO_PATH"
+          cp "$SO_PATH" candidate-1.so
+          sha256sum candidate-1.so | tee candidate-1.sha256
+          ./solana-verify get-executable-hash candidate-1.so | tail -n 1 | tr -d '\r' | tee candidate-1.exec-hash
+
+      - name: Validate embedded RAINA security metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          data=open('candidate-1.so','rb').read()
+          required=[
+            b'=======BEGIN SECURITY.TXT V1=======',
+            b'https://useraina.com',
+            b'https://useraina.com/security-policy.txt',
+            b'https://useraina.com/support',
+            b'HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti',
+          ]
+          missing=[x for x in required if x not in data]
+          if missing:
+              raise SystemExit(f'missing required RAINA metadata: {missing!r}')
+          print('security_txt_embedded=true')
+          PY
+
+      - name: Clean and rebuild independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf examples/oft-solana/target
+          ./solana-verify build \
+            --base-image "$BASE_IMAGE" \
+            --library-name oft \
+            "$GITHUB_WORKSPACE/examples/oft-solana" | tee verifier-build-2.log
+          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
+          test -n "$SO_PATH"
+          cp "$SO_PATH" candidate-2.so
+          sha256sum candidate-2.so | tee candidate-2.sha256
+          ./solana-verify get-executable-hash candidate-2.so | tail -n 1 | tr -d '\r' | tee candidate-2.exec-hash
+
+      - name: Require byte-for-byte reproducibility
+        shell: bash
+        env:
+          EXPECTED_EXECUTABLE_HASH: ${{ inputs.expected_executable_hash }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          cmp --silent candidate-1.so candidate-2.so
+          RAW1="$(awk '{print $1}' candidate-1.sha256)"
+          RAW2="$(awk '{print $1}' candidate-2.sha256)"
+          EXEC1="$(cat candidate-1.exec-hash)"
+          EXEC2="$(cat candidate-2.exec-hash)"
+          test "$RAW1" = "$RAW2"
+          test "$EXEC1" = "$EXEC2"
+          if [ -n "$EXPECTED_EXECUTABLE_HASH" ]; then
+            test "$EXEC1" = "$EXPECTED_EXECUTABLE_HASH"
+          fi
+          {
+            echo "source_ref=$SOURCE_REF"
+            echo "base_image=$BASE_IMAGE"
+            echo "solana_verify=$SOLANA_VERIFY_VERSION"
+            echo "raw_sha256=$RAW1"
+            echo "executable_hash=$EXEC1"
+            echo "bytes=$(stat -c%s candidate-1.so)"
+            echo "reproduced_twice=true"
+            echo "security_txt_embedded=true"
+          } | tee verifier-native-summary.txt
+
+      - name: Upload verified candidate evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-verifier-native-${{ inputs.source_ref }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            candidate-1.so
+            candidate-1.sha256
+            candidate-1.exec-hash
+            candidate-2.sha256
+            candidate-2.exec-hash
+            verifier-native-summary.txt
+            verifier-build-1.log
+            verifier-build-2.log
