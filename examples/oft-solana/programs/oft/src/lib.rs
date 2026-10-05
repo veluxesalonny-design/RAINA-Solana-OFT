@@ -17,10 +17,24 @@ use oapp::{
 use solana_helper::program_id_from_env;
 use state::*;
 
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
 declare_id!(Pubkey::new_from_array(program_id_from_env!(
     "OFT_ID",
     "9UovNrJD8pQyBLheeHNayuG1wJSEAoxkmM14vw5gcsTT"
 )));
+
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "RAINA",
+    project_url: "https://useraina.com",
+    contacts: "link:https://useraina.com/support",
+    policy: "https://useraina.com/security-policy.txt",
+    preferred_languages: "en",
+    source_code: "https://github.com/veluxesalonny-design/RAINA-Solana-OFT/tree/raina-security-txt/examples/oft-solana",
+    source_release: "raina-security-txt-v1"
+}
 
 pub const OFT_SEED: &[u8] = b"OFT";
 pub const PEER_SEED: &[u8] = b"Peer";
