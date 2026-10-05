@@ -1,21 +1,21 @@
-name: RAINA Solana Verifiable Build
+name: RAINA Solana OFT reproducible build
 
 on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Source branch or commit to build
+        description: Source branch/ref
         required: true
         type: string
-      expected_executable_hash:
-        description: Optional Solana executable hash that must match
+      expected_raw_sha:
+        description: Optional expected raw SHA256
         required: false
-        default: ''
+        default: ""
         type: string
-      base_image:
-        description: Exact verifiable build image or digest
+      expected_executable_hash:
+        description: Optional expected Solana executable hash
         required: false
-        default: 'solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b'
+        default: ""
         type: string
 
 permissions:
@@ -23,10 +23,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      OFT_PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+      ANCHOR_IMAGE_DIGEST: sha256:21ab8a16e19df4301a198d7a55ab2988549aa2d996e6b5ad229c1d95b9f2d326
+
     steps:
-      - name: Checkout selected source only
+      - name: Checkout selected source
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref }}
@@ -35,8 +39,44 @@ jobs:
             examples/oft-solana
           sparse-checkout-cone-mode: true
 
-      - name: Download pinned solana-verify 0.5.2
-        shell: bash
+      - name: Install Rust 1.84.1
+        run: |
+          rustup toolchain install 1.84.1 --profile minimal
+          rustup default 1.84.1
+          rustc --version
+
+      - name: Install Solana CLI 2.2.20
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v2.2.20/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/share/solana/install/active_release/bin/solana" --version
+
+      - name: Install Anchor 0.31.1
+        run: |
+          cargo install --git https://github.com/solana-foundation/anchor --tag v0.31.1 anchor-cli --locked
+          anchor --version
+
+      - name: Pin exact Anchor verifiable image
+        run: |
+          set -euo pipefail
+          docker pull "solanafoundation/anchor@${ANCHOR_IMAGE_DIGEST}"
+          docker tag "solanafoundation/anchor@${ANCHOR_IMAGE_DIGEST}" solanafoundation/anchor:v0.31.1
+          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' solanafoundation/anchor:v0.31.1)"
+          echo "$DIGEST"
+          case "$DIGEST" in
+            *"${ANCHOR_IMAGE_DIGEST}") ;;
+            *) echo "Anchor image digest mismatch" >&2; exit 1 ;;
+          esac
+
+      - name: Build exact Anchor-verifiable RAINA OFT
+        working-directory: examples/oft-solana
+        run: |
+          set -euo pipefail
+          anchor build -v -e OFT_ID="$OFT_PROGRAM_ID"
+          test -s target/verifiable/oft.so
+          sha256sum target/verifiable/oft.so | tee target/verifiable/oft.sha256
+
+      - name: Install official solana-verify 0.5.2
         run: |
           set -euo pipefail
           curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
@@ -44,44 +84,38 @@ jobs:
           chmod +x solana-verify
           ./solana-verify --version
 
-      - name: Build with selected exact image
-        shell: bash
+      - name: Record and validate hashes
         env:
-          RAINA_SOLANA_IMAGE: ${{ inputs.base_image }}
-        run: |
-          set -euo pipefail
-          echo "base_image=$RAINA_SOLANA_IMAGE"
-          ./solana-verify build \
-            --base-image "$RAINA_SOLANA_IMAGE" \
-            --library-name oft \
-            "$GITHUB_WORKSPACE/examples/oft-solana" | tee solana-verify-build.log
-
-      - name: Hash and validate artifact
-        shell: bash
-        env:
+          EXPECTED_RAW_SHA: ${{ inputs.expected_raw_sha }}
           EXPECTED_EXECUTABLE_HASH: ${{ inputs.expected_executable_hash }}
           SOURCE_REF: ${{ inputs.source_ref }}
-          BASE_IMAGE: ${{ inputs.base_image }}
         run: |
           set -euo pipefail
-          SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
-          test -n "$SO_PATH"
-          cp "$SO_PATH" raina-oft.so
+          cp examples/oft-solana/target/verifiable/oft.so raina-oft.so
           RAW_SHA="$(sha256sum raina-oft.so | awk '{print $1}')"
           EXEC_HASH="$(./solana-verify get-executable-hash raina-oft.so | tail -n 1 | tr -d '\r')"
           printf '%s\n' "$RAW_SHA" > raw-sha256.txt
           printf '%s\n' "$EXEC_HASH" > executable-hash.txt
           {
             echo "source_ref=$SOURCE_REF"
-            echo "base_image=$BASE_IMAGE"
             echo "raw_sha256=$RAW_SHA"
             echo "executable_hash=$EXEC_HASH"
             echo "bytes=$(stat -c%s raina-oft.so)"
+            echo "anchor_image_digest=$ANCHOR_IMAGE_DIGEST"
+            echo "rust=1.84.1"
+            echo "solana_cli=2.2.20"
+            echo "anchor=0.31.1"
           } | tee build-summary.txt
-          if [ -n "$EXPECTED_EXECUTABLE_HASH" ] && [ "$EXEC_HASH" != "$EXPECTED_EXECUTABLE_HASH" ]; then
-            echo "Executable hash mismatch: expected $EXPECTED_EXECUTABLE_HASH got $EXEC_HASH" >&2
+
+          if [ -n "$EXPECTED_RAW_SHA" ] && [ "$RAW_SHA" != "$EXPECTED_RAW_SHA" ]; then
+            echo "Raw SHA mismatch: expected $EXPECTED_RAW_SHA got $RAW_SHA" >&2
             exit 1
           fi
+          if [ -n "$EXPECTED_EXECUTABLE_HASH" ] && [ "$EXEC_HASH" != "$EXPECTED_EXECUTABLE_HASH" ]; then
+            echo "Exec hash mismatch: expected $EXPECTED_EXECUTABLE_HASH got $EXEC_HASH" >&2
+            exit 1
+          fi
+
           python3 - <<'PY'
           import os
           data=open('raina-oft.so','rb').read()
@@ -93,7 +127,7 @@ jobs:
               if missing:
                   raise SystemExit(f'missing security.txt markers: {missing!r}')
               print('security_txt_embedded=true')
-          elif ref in ('raina-deployed-source','raina-deployed-upstream'):
+          elif ref == 'raina-deployed-source':
               if marker in data:
                   raise SystemExit('deployed source unexpectedly contains security.txt')
               print('security_txt_embedded=false')
@@ -102,12 +136,11 @@ jobs:
       - name: Upload build evidence
         uses: actions/upload-artifact@v4
         with:
-          name: raina-solana-${{ inputs.source_ref }}
-          if-no-files-found: error
-          retention-days: 30
+          name: raina-solana-oft-${{ inputs.source_ref }}
           path: |
             raina-oft.so
             raw-sha256.txt
             executable-hash.txt
             build-summary.txt
-            solana-verify-build.log
+          if-no-files-found: error
+          retention-days: 30
