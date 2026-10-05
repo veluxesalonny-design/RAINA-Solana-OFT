@@ -22,7 +22,7 @@ use solana_security_txt::security_txt;
 
 declare_id!(Pubkey::new_from_array(program_id_from_env!(
     "OFT_ID",
-    "9UovNrJD8pQyBLheeHNayuG1wJSEAoxkmM14vw5gcsTT"
+    "HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti"
 )));
 
 #[cfg(not(feature = "no-entrypoint"))]
