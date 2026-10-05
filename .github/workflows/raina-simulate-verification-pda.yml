@@ -1,0 +1,88 @@
+name: RAINA Simulate Verification PDA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+  UPLOADER: Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu
+  SOURCE_REPO: https://github.com/veluxesalonny-design/RAINA-Solana-OFT
+  SOURCE_COMMIT: ba3e2d88b67798ba2c564eaf20be19a7981c6dbb
+  SOURCE_MOUNT: examples/oft-solana
+  SOURCE_LIBRARY: oft
+  BASE_IMAGE: solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b
+  RPC_URL: https://api.mainnet-beta.solana.com
+
+jobs:
+  simulate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download pinned solana-verify 0.5.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
+          echo 'b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f  solana-verify' | sha256sum -c -
+          chmod +x solana-verify
+
+      - name: Export exact unsigned verification transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./solana-verify export-pda-tx \
+            "$SOURCE_REPO" \
+            --program-id "$PROGRAM_ID" \
+            --uploader "$UPLOADER" \
+            --commit-hash "$SOURCE_COMMIT" \
+            --mount-path "$SOURCE_MOUNT" \
+            --library-name "$SOURCE_LIBRARY" \
+            --base-image "$BASE_IMAGE" \
+            --encoding base64 \
+            -u "$RPC_URL" | tee export.log
+          grep -E '^[A-Za-z0-9+/=]{300,}$' export.log | tail -n 1 > tx.base64
+          test -s tx.base64
+
+      - name: Simulate with signatures disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, urllib.request
+          tx=open('tx.base64').read().strip()
+          payload={"jsonrpc":"2.0","id":1,"method":"simulateTransaction","params":[tx,{"encoding":"base64","sigVerify":False,"replaceRecentBlockhash":True,"commitment":"processed"}]}
+          req=urllib.request.Request('https://api.mainnet-beta.solana.com',data=json.dumps(payload).encode(),headers={'content-type':'application/json'})
+          with urllib.request.urlopen(req,timeout=30) as r: out=json.load(r)
+          open('simulation.json','w').write(json.dumps(out,indent=2))
+          val=out.get('result',{}).get('value',{})
+          print('simulation_err=',val.get('err'))
+          print('units_consumed=',val.get('unitsConsumed'))
+          logs=val.get('logs') or []
+          for line in logs: print(line)
+          if val.get('err') is not None:
+              raise SystemExit('verification PDA simulation failed')
+          joined='\n'.join(logs)
+          forbidden=[
+            'BPFLoaderUpgradeab1e11111111111111111111111',
+            'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+            'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+          ]
+          if any(x in joined for x in forbidden):
+              raise SystemExit('unexpected loader/token invocation in verification PDA transaction')
+          if 'Instruction: Initialize' not in joined:
+              raise SystemExit('expected verification Initialize instruction not observed')
+          print('verification_pda_simulation_safe=true')
+          PY
+
+      - name: Upload simulation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-final-verification-pda-simulation
+          retention-days: 30
+          path: |
+            tx.base64
+            export.log
+            simulation.json
