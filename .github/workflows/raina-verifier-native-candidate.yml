@@ -70,12 +70,25 @@ jobs:
             b'https://useraina.com',
             b'https://useraina.com/security-policy.txt',
             b'https://useraina.com/support',
-            b'HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti',
           ]
           missing=[x for x in required if x not in data]
           if missing:
               raise SystemExit(f'missing required RAINA metadata: {missing!r}')
+
+          alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+          value='HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti'
+          n=0
+          for ch in value:
+              n=n*58+alphabet.index(ch)
+          raw=n.to_bytes((n.bit_length()+7)//8,'big') if n else b''
+          pad=len(value)-len(value.lstrip('1'))
+          program_id=b'\0'*pad+raw
+          if len(program_id) != 32:
+              raise SystemExit(f'unexpected decoded program id length: {len(program_id)}')
+          if program_id not in data:
+              raise SystemExit('binary RAINA program id bytes not found in candidate')
           print('security_txt_embedded=true')
+          print('raina_program_id_embedded=true')
           PY
 
       - name: Clean and rebuild independently
