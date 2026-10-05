@@ -1,0 +1,52 @@
+name: RAINA Current Program Legacy Anchor Verify
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Download pinned official solana-verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
+          echo 'b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f  solana-verify' | sha256sum -c -
+          chmod +x solana-verify
+          ./solana-verify --version
+
+      - name: Verify current live program using legacy Anchor path
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          printf 'n\n' | ./solana-verify verify-from-repo \
+            -um \
+            --program-id HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti \
+            https://github.com/veluxesalonny-design/RAINA-Solana-OFT \
+            --commit-hash b85c006523fb814cad03f3ca10d19d190f8e5c3d \
+            --mount-path examples/oft-solana \
+            --library-name oft \
+            --bpf 2>&1 | tee legacy-anchor-verify.log
+          rc=${PIPESTATUS[1]}
+          set -e
+          cat legacy-anchor-verify.log
+          grep -Eq 'Program hash matches|Executable matches onchain program data' legacy-anchor-verify.log || {
+            echo 'Legacy Anchor verification did not reproduce the live program.' >&2
+            exit 1
+          }
+          exit "$rc"
+
+      - name: Upload read-only verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-current-program-legacy-anchor-verify
+          retention-days: 30
+          if-no-files-found: warn
+          path: legacy-anchor-verify.log
