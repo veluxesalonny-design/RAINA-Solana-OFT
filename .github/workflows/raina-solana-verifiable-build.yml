@@ -12,6 +12,11 @@ on:
         required: false
         default: ''
         type: string
+      base_image:
+        description: Exact verifiable build image or digest
+        required: false
+        default: 'solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b'
+        type: string
 
 permissions:
   contents: read
@@ -39,12 +44,13 @@ jobs:
           chmod +x solana-verify
           ./solana-verify --version
 
-      - name: Build in exact Solana 2.2.20 image
+      - name: Build with selected exact image
         shell: bash
         env:
-          RAINA_SOLANA_IMAGE: solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b
+          RAINA_SOLANA_IMAGE: ${{ inputs.base_image }}
         run: |
           set -euo pipefail
+          echo "base_image=$RAINA_SOLANA_IMAGE"
           ./solana-verify build \
             --base-image "$RAINA_SOLANA_IMAGE" \
             --library-name oft \
@@ -55,6 +61,7 @@ jobs:
         env:
           EXPECTED_EXECUTABLE_HASH: ${{ inputs.expected_executable_hash }}
           SOURCE_REF: ${{ inputs.source_ref }}
+          BASE_IMAGE: ${{ inputs.base_image }}
         run: |
           set -euo pipefail
           SO_PATH="$(find examples/oft-solana -type f -name 'oft.so' | head -n 1)"
@@ -66,6 +73,7 @@ jobs:
           printf '%s\n' "$EXEC_HASH" > executable-hash.txt
           {
             echo "source_ref=$SOURCE_REF"
+            echo "base_image=$BASE_IMAGE"
             echo "raw_sha256=$RAW_SHA"
             echo "executable_hash=$EXEC_HASH"
             echo "bytes=$(stat -c%s raina-oft.so)"
@@ -85,9 +93,9 @@ jobs:
               if missing:
                   raise SystemExit(f'missing security.txt markers: {missing!r}')
               print('security_txt_embedded=true')
-          elif ref == 'raina-deployed-source':
+          elif ref in ('raina-deployed-source','raina-deployed-upstream'):
               if marker in data:
-                  raise SystemExit('deployed-source unexpectedly contains security.txt')
+                  raise SystemExit('deployed source unexpectedly contains security.txt')
               print('security_txt_embedded=false')
           PY
 
