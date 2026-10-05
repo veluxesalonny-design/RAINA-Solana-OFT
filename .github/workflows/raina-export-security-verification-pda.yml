@@ -1,0 +1,73 @@
+name: RAINA Export Security Verification PDA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROGRAM_ID: HVjckG1mj53Gp1T6Czoo1bK827sDbCrtNthvKjzzrMti
+  UPLOADER: Eb5D9NosfFJLQP2BrcvbRuSNj9AERfBCwyWSARPrkyu
+  SOURCE_REPO: https://github.com/veluxesalonny-design/RAINA-Solana-OFT
+  SOURCE_COMMIT: ba3e2d88b67798ba2c564eaf20be19a7981c6dbb
+  SOURCE_MOUNT: examples/oft-solana
+  SOURCE_LIBRARY: oft
+  BASE_IMAGE: solanafoundation/solana-verifiable-build@sha256:a1c0d5899ee0ffc81412428760662d9ba4643c2003ec3a92ab6f75a6e2e52a1b
+  RPC_URL: https://api.mainnet-beta.solana.com
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download pinned solana-verify 0.5.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/solana-foundation/solana-verifiable-build/releases/download/v0.5.2/solana-verify-0.5.2-linux -o solana-verify
+          echo 'b9d5ccce9634dc14269cab3e7a58649bc141b3306e7735a94478c936341f211f  solana-verify' | sha256sum -c -
+          chmod +x solana-verify
+          ./solana-verify --version
+
+      - name: Export unsigned verifier PDA transaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./solana-verify export-pda-tx \
+            "$SOURCE_REPO" \
+            --program-id "$PROGRAM_ID" \
+            --uploader "$UPLOADER" \
+            --commit-hash "$SOURCE_COMMIT" \
+            --mount-path "$SOURCE_MOUNT" \
+            --library-name "$SOURCE_LIBRARY" \
+            --base-image "$BASE_IMAGE" \
+            --encoding base64 \
+            -u "$RPC_URL" | tee export.log
+          TX="$(grep -E '^[A-Za-z0-9+/=]{300,}$' export.log | tail -n 1)"
+          test -n "$TX"
+          printf '%s\n' "$TX" > verification-pda-transaction.base64
+          sha256sum verification-pda-transaction.base64 > verification-pda-transaction.sha256
+          {
+            echo "program_id=$PROGRAM_ID"
+            echo "uploader=$UPLOADER"
+            echo "source_repo=$SOURCE_REPO"
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "mount_path=$SOURCE_MOUNT"
+            echo "library_name=$SOURCE_LIBRARY"
+            echo "base_image=$BASE_IMAGE"
+            echo "broadcast=false"
+            echo "signed=false"
+          } > verification-pda-provenance.txt
+
+      - name: Upload unsigned export evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: raina-security-verification-pda-unsigned
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            verification-pda-transaction.base64
+            verification-pda-transaction.sha256
+            verification-pda-provenance.txt
+            export.log
