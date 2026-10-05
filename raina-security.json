@@ -1,0 +1,18 @@
+{
+  "name": "RAINA",
+  "logo": "https://gateway.irys.xyz/ESuUMF46jvYBFpAJjZsaaUYJMoRTXWYCEYxHQjB9fJ6r",
+  "description": "RAINA — More Than A Token. Canonical Solana Native OFT program security and source metadata.",
+  "project_url": "https://useraina.com",
+  "contacts": [
+    "link:https://useraina.com/support"
+  ],
+  "policy": "https://useraina.com/security-policy.txt",
+  "preferred_languages": [
+    "en"
+  ],
+  "source_code": "https://github.com/veluxesalonny-design/RAINA-Solana-OFT",
+  "source_release": "raina-mainnet-v1",
+  "source_revision": "4973ba8bef7b0fdf7268469abea3ea50dbd4bbd8",
+  "acknowledgements": "https://useraina.com/security-policy.txt",
+  "version": "1.0.0"
+}
